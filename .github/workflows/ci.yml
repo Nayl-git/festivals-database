@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: festivals
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: festivals
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build the table files (ETL)
+        run: python etl/build_tables.py
+
+      - name: Run the tests
+        run: python -m pytest -q
+
+      - name: Create the schema and load every table
+        run: |
+          psql --version
+          psql -v ON_ERROR_STOP=1 -f sql/01_schema.sql -f sql/02_load.sql
+
+      - name: Check row counts
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "
+            SELECT 'region' AS table_name, COUNT(*) FROM region
+            UNION ALL SELECT 'departement', COUNT(*) FROM departement
+            UNION ALL SELECT 'commune', COUNT(*) FROM commune
+            UNION ALL SELECT 'adresse', COUNT(*) FROM adresse
+            UNION ALL SELECT 'categorie', COUNT(*) FROM categorie
+            UNION ALL SELECT 'sous_categorie', COUNT(*) FROM sous_categorie
+            UNION ALL SELECT 'organisation', COUNT(*) FROM organisation
+            UNION ALL SELECT 'festival', COUNT(*) FROM festival
+            UNION ALL SELECT 'festival_categorie', COUNT(*) FROM festival_categorie
+            UNION ALL SELECT 'festival_organisation', COUNT(*) FROM festival_organisation
+            UNION ALL SELECT 'festival_commune', COUNT(*) FROM festival_commune
+            UNION ALL SELECT 'festival_adresse', COUNT(*) FROM festival_adresse;"
+          test "$(psql -tA -c 'SELECT COUNT(*) FROM festival')" = "7283"
+          test "$(psql -tA -c 'SELECT COUNT(*) FROM festival_categorie')" = "7283"
+
+      - name: Run the analysis queries
+        run: psql -v ON_ERROR_STOP=1 -f sql/03_queries.sql
